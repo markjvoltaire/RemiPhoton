@@ -17,9 +17,12 @@ const app = await Spectrum({
 console.log(`Remi is online. provider=${PROVIDER}`);
 
 for await (const [space, message] of app.messages) {
-  space.responding(async () => {
-    await handleMessage(space, message);
-  }).catch((err: Error) => {
-    console.error(`Error handling message in space ${space.id}:`, err.message);
-  });
+  try {
+    await space.responding(async () => {
+      await handleMessage(space, message);
+    });
+  } catch (err) {
+    const messageText = err instanceof Error ? err.message : String(err);
+    console.error(`Error handling message in space ${space.id}:`, messageText);
+  }
 }

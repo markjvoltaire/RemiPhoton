@@ -30,7 +30,10 @@ function sanitizeOutgoingText(text: string): string {
 
 export async function handleMessage(space: Space, message: Message): Promise<void> {
   // Prioritize read receipts before doing any heavier work or replying.
-  await markRead(space.id).catch(() => {});
+  await markRead(space.id).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[markRead] failed space=${space.id}: ${msg}`);
+  });
 
   const senderId = message.direction === 'inbound' ? message.sender.id : space.id;
 
