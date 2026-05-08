@@ -1,0 +1,8 @@
+# Render Blueprint for RemiPhoton (long-running Spectrum app)
+services:
+  - type: web
+    name: remiphoton
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
