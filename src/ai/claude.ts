@@ -12,6 +12,7 @@ import {
 } from '../services/supabase.js';
 import { resolveRelativeDates } from '../utils/resolveRelativeDates.js';
 import { buildSignupUrl } from '../utils/signupUrl.js';
+import { formatDuffelError, isStaleOfferError } from '../utils/duffelErrors.js';
 import type { ConversationMessage, UserProfile } from '../types.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -34,6 +35,7 @@ Rules:
 - When search_flights returns results, use the "formatted" field as your reply verbatim — do not reformat or paraphrase it. Append one follow-up line: "Which one?" or "Want me to book one?"
 - When hold_flight returns, use the "formatted" field as your reply verbatim — do not reformat or paraphrase it.
 - For hold_flight, use the offer ID from the "offers" array in the search result.
+- Never invent flights, prices, or flight numbers that are not in the latest pending options list from context. If you need another itinerary, call search_flights again.
 - Format prices as "$X" not "$X.XX" unless cents matter.
 - After a successful booking, give the booking reference and wish them a good flight.`;
 
@@ -56,25 +58,68 @@ async function executeTool(
     await setLastFlightSearch(user.id, {
       offers: summarizeOffersForContext(offers),
       updated_at: new Date().toISOString(),
+      search_params: {
+        origin: input.origin as string,
+        destination: input.destination as string,
+        departure_date: input.departure_date as string,
+        return_date: (input.return_date as string | undefined) || undefined,
+      },
     });
     return JSON.stringify({ formatted: offersToSMS(offers), offers });
   }
 
   if (toolName === 'hold_flight') {
+    const offerId = input.offer_id as string;
+    const allowedIds = user.last_flight_search?.offers?.map((o) => o.offer_id) ?? [];
+    if (allowedIds.length > 0 && !allowedIds.includes(offerId)) {
+      return JSON.stringify({
+        error: true,
+        message:
+          'That offer_id is not in the latest search. Call search_flights again with the same route and dates, then call hold_flight only with an offer_id from the new offers list.',
+      });
+    }
+
     const nameParts = user.name.trim().split(' ');
     const given_name = nameParts[0];
     const family_name = nameParts.slice(1).join(' ') || nameParts[0];
 
-    const order = await holdOrder(input.offer_id as string, {
-      title: 'mr',
-      gender: user.gender,
-      given_name,
-      family_name,
-      date_of_birth: user.date_of_birth,
-      email: user.email,
-      phone_number: user.phone,
-      passport_number: user.passport_number,
-    });
+    const params = user.last_flight_search?.search_params;
+
+    let order;
+    try {
+      order = await holdOrder(offerId, {
+        title: 'mr',
+        gender: user.gender,
+        given_name,
+        family_name,
+        date_of_birth: user.date_of_birth,
+        email: user.email,
+        phone_number: user.phone,
+        passport_number: user.passport_number,
+      });
+    } catch (err) {
+      if (params && isStaleOfferError(err)) {
+        const offers = await searchFlights({
+          origin: params.origin,
+          destination: params.destination,
+          departure_date: params.departure_date,
+          return_date: params.return_date,
+        });
+        await setLastFlightSearch(user.id, {
+          offers: summarizeOffersForContext(offers),
+          updated_at: new Date().toISOString(),
+          search_params: params,
+        });
+        return JSON.stringify({
+          error: true,
+          stale_offer: true,
+          formatted: offersToSMS(offers),
+          offers,
+          message: `Offer expired (${formatDuffelError(err)}). Fresh results are in "formatted". Ask the user to pick again from this list only; then call hold_flight with the new offer_id.`,
+        });
+      }
+      throw err;
+    }
 
     const outSeg = order.slices[0]?.segments[0];
     const retSeg = order.slices[1]?.segments[0];
@@ -195,7 +240,7 @@ export async function runAgentLoop(
             console.log(`[tool] ${block.name} ok`);
             return { type: 'tool_result' as const, tool_use_id: block.id, content: result };
           } catch (err) {
-            const message = err instanceof Error ? err.message : 'Unknown error';
+            const message = formatDuffelError(err);
             console.error(`[tool] ${block.name} error:`, message);
             return {
               type: 'tool_result' as const,

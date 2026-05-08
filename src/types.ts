@@ -10,9 +10,18 @@ export interface PendingFlightOfferSummary {
   return_arrive?: string;
 }
 
+/** Saved when running search_flights so we can refresh stale Duffel offers. */
+export interface LastFlightSearchParams {
+  origin: string;
+  destination: string;
+  departure_date: string;
+  return_date?: string;
+}
+
 export interface LastFlightSearchContext {
   offers: PendingFlightOfferSummary[];
   updated_at: string;
+  search_params?: LastFlightSearchParams;
 }
 
 export interface UserProfile {
