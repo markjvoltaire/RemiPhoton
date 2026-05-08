@@ -25,6 +25,10 @@ export interface UserProfile {
   passport_number?: string;
   stripe_customer_id: string | null;
   stripe_spt_id: string | null;
+  pending_order_id?: string | null;
+  pending_order_amount?: string | null;
+  pending_order_currency?: string | null;
+  pending_booking_reference?: string | null;
   created_at: string;
   last_flight_search?: LastFlightSearchContext | null;
 }

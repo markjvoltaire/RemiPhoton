@@ -97,7 +97,7 @@ export function formatHeldOrderConfirmationSMS(summary: HeldOrderSummary): strin
     : null;
 
   return [
-    'Confirm booking',
+    'Confirm this flight',
     '',
     summary.airline,
     `${summary.from} ${arrow} ${summary.to} · ${datePart}`,
@@ -106,8 +106,8 @@ export function formatHeldOrderConfirmationSMS(summary: HeldOrderSummary): strin
     ...(ret ? [ret] : []),
     `$${summary.price}`,
     '',
-    'Reply yes to book',
-    'or say change',
+    'Reply HOLD to reserve it',
+    'or BOOK to purchase now',
   ].join('\n');
 }
 
@@ -123,7 +123,7 @@ export function formatFlightConfirmationSMS(details: FlightConfirmation): string
   const arr = formatTime(details.arrival_time);
 
   return [
-    'Confirm booking',
+    'Confirm this flight',
     '',
     details.airline,
     `${details.from} → ${details.to} · ${details.date}`,
@@ -131,8 +131,8 @@ export function formatFlightConfirmationSMS(details: FlightConfirmation): string
     `${dep} → ${arr}`,
     `$${details.price}`,
     '',
-    'Reply yes to book',
-    'or say change',
+    'Reply HOLD to reserve it',
+    'or BOOK to purchase now',
   ].join('\n');
 }
 

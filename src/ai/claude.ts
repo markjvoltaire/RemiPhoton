@@ -4,7 +4,12 @@ import { searchFlights, holdOrder, payForOrderWithBalance } from '../services/du
 import { chargeViaSPT } from '../services/stripe.js';
 import { offersToSMS, formatHeldOrderConfirmationSMS } from '../utils/formatFlights.js';
 import { summarizeOffersForContext, formatLastSearchForPrompt } from '../utils/flightSearchContext.js';
-import { setLastFlightSearch, clearLastFlightSearch } from '../services/supabase.js';
+import {
+  setLastFlightSearch,
+  clearLastFlightSearch,
+  setPendingOrder,
+  clearPendingOrder,
+} from '../services/supabase.js';
 import { resolveRelativeDates } from '../utils/resolveRelativeDates.js';
 import { buildSignupUrl } from '../utils/signupUrl.js';
 import type { ConversationMessage, UserProfile } from '../types.js';
@@ -90,6 +95,13 @@ async function executeTool(
       return_arrive_time: retSeg?.arriving_at?.split('T')[1]?.slice(0, 5),
     });
 
+    await setPendingOrder({
+      userId: user.id,
+      orderId: order.id,
+      bookingReference: order.booking_reference,
+      amount: order.total_amount,
+      currency: order.total_currency,
+    });
     await clearLastFlightSearch(user.id);
     return JSON.stringify({ order, formatted: confirmation });
   }
@@ -102,14 +114,35 @@ async function executeTool(
       });
     }
 
-    const amountStr = input.amount as string;
-    const currency = (input.currency as string).toLowerCase();
+    if (!user.pending_order_id) {
+      return JSON.stringify({
+        success: false,
+        message:
+          'I can either HOLD or BOOK a flight, but I need a specific option first. Which flight do you want?',
+      });
+    }
+
+    // If the model doesn't know the order context (because SMS history is plain text),
+    // fall back to the last held order persisted on the user record.
+    const orderId = (input.order_id as string) || user.pending_order_id;
+    const amountStr = (input.amount as string) || user.pending_order_amount;
+    const currency = ((input.currency as string) || user.pending_order_currency || '').toLowerCase();
+
+    if (!orderId || !amountStr || !currency) {
+      return JSON.stringify({
+        success: false,
+        message:
+          "I don't have a held flight to book yet. Tell me which flight you want and I can hold it first.",
+      });
+    }
+
     const amountInCents = Math.round(parseFloat(amountStr) * 100);
 
     await chargeViaSPT(user.stripe_spt_id, amountInCents, currency);
-    await payForOrderWithBalance(input.order_id as string, amountStr, currency.toUpperCase());
+    await payForOrderWithBalance(orderId, amountStr, currency.toUpperCase());
 
     await clearLastFlightSearch(user.id);
+    await clearPendingOrder(user.id);
     return JSON.stringify({ success: true, message: 'Payment processed and booking confirmed.' });
   }
 

@@ -49,3 +49,33 @@ export async function setLastFlightSearch(
 export async function clearLastFlightSearch(userId: string): Promise<void> {
   await supabase.from('users').update({ last_flight_search: null }).eq('id', userId);
 }
+
+export async function setPendingOrder(params: {
+  userId: string;
+  orderId: string;
+  bookingReference: string;
+  amount: string;
+  currency: string;
+}): Promise<void> {
+  await supabase
+    .from('users')
+    .update({
+      pending_order_id: params.orderId,
+      pending_booking_reference: params.bookingReference,
+      pending_order_amount: params.amount,
+      pending_order_currency: params.currency,
+    })
+    .eq('id', params.userId);
+}
+
+export async function clearPendingOrder(userId: string): Promise<void> {
+  await supabase
+    .from('users')
+    .update({
+      pending_order_id: null,
+      pending_booking_reference: null,
+      pending_order_amount: null,
+      pending_order_currency: null,
+    })
+    .eq('id', userId);
+}

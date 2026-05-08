@@ -41,7 +41,7 @@ export const tools: Anthropic.Tool[] = [
   {
     name: 'hold_flight',
     description:
-      'Hold a specific flight offer using the user\'s stored passenger details. This reserves the seat without charging payment. Call this only after the user has confirmed they want to book a specific flight.',
+      "Hold a specific flight offer using the user's stored passenger details. This reserves the itinerary without charging payment. Use this when the user says HOLD (or when you need an order_id to book).",
     input_schema: {
       type: 'object',
       properties: {
@@ -56,7 +56,7 @@ export const tools: Anthropic.Tool[] = [
   {
     name: 'confirm_booking',
     description:
-      'Finalize payment and confirm a held order. Issues a single-use virtual card via Stripe Issuing and submits payment to Duffel. Call this only after the user has explicitly confirmed the booking.',
+      'Finalize payment and confirm a held order. Issues a single-use virtual card via Stripe Issuing and submits payment to Duffel. Use this when the user says BOOK.',
     input_schema: {
       type: 'object',
       properties: {
@@ -73,7 +73,7 @@ export const tools: Anthropic.Tool[] = [
           description: 'Three-letter currency code (e.g. "usd")',
         },
       },
-      required: ['order_id', 'amount', 'currency'],
+      required: [],
     },
   },
 ];
