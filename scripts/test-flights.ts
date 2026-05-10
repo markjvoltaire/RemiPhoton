@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { searchFlights } from '../src/services/duffel.js';
 
-const offers = await searchFlights({
+const { offers } = await searchFlights({
   origin: 'LHR',
   destination: 'JFK',
   departure_date: '2025-07-01',

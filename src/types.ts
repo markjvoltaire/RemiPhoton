@@ -22,6 +22,8 @@ export interface LastFlightSearchContext {
   offers: PendingFlightOfferSummary[];
   updated_at: string;
   search_params?: LastFlightSearchParams;
+  /** Full `data` object from Duffel POST /air/offer_requests (same shape as API JSON). */
+  duffel_raw_offer_request?: Record<string, unknown>;
 }
 
 export interface UserProfile {
@@ -40,6 +42,8 @@ export interface UserProfile {
   pending_booking_reference?: string | null;
   created_at: string;
   last_flight_search?: LastFlightSearchContext | null;
+  /** Last held order: GET /offers + POST /orders payloads until cleared after payment. */
+  pending_duffel_order?: Record<string, unknown> | null;
 }
 
 export interface ConversationMessage {

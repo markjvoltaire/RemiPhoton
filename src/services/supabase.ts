@@ -56,6 +56,8 @@ export async function setPendingOrder(params: {
   bookingReference: string;
   amount: string;
   currency: string;
+  /** Full Duffel GET offer + POST order response bodies (JSON-serializable). */
+  duffelPayload?: Record<string, unknown>;
 }): Promise<void> {
   await supabase
     .from('users')
@@ -64,6 +66,7 @@ export async function setPendingOrder(params: {
       pending_booking_reference: params.bookingReference,
       pending_order_amount: params.amount,
       pending_order_currency: params.currency,
+      pending_duffel_order: params.duffelPayload ?? null,
     })
     .eq('id', params.userId);
 }
@@ -76,6 +79,7 @@ export async function clearPendingOrder(userId: string): Promise<void> {
       pending_booking_reference: null,
       pending_order_amount: null,
       pending_order_currency: null,
+      pending_duffel_order: null,
     })
     .eq('id', userId);
 }

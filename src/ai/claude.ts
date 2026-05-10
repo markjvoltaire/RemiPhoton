@@ -1,7 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { tools } from './tools.js';
-import { searchFlights, holdOrder, payForOrderWithBalance } from '../services/duffel.js';
-import { chargeViaSPT } from '../services/stripe.js';
+import {
+  searchFlights,
+  holdOrder,
+  bookOrderInstant,
+  getOfferPricing,
+  payForOrderWithBalance,
+  OfferRequiresInstantPaymentError,
+} from '../services/duffel.js';
+import { chargeViaSPT, refundPaymentIntent } from '../services/stripe.js';
 import { offersToSMS, formatHeldOrderConfirmationSMS } from '../utils/formatFlights.js';
 import { summarizeOffersForContext, formatLastSearchForPrompt } from '../utils/flightSearchContext.js';
 import {
@@ -27,17 +34,26 @@ Rules:
 - When presenting flight options, list at most 3, with price, airline, and departure time.
 - Always resolve relative dates (e.g. "Friday", "next week") using today's date before calling search_flights.
 - Decide whether the user wants a one-way or round-trip flight. If round-trip, collect both departure_date and return_date before calling search_flights.
-- If pending flight options are listed in context below, use them: when the user picks an airline or says first/second/third, call hold_flight with the matching offer_id. Do not ask for dates again if they already gave them or if those options already reflect the trip.
+- If pending flight options are listed in context below, use them: when the user picks an airline or says first/second/third, pick the matching offer_id. Do not ask for dates again if they already gave them or if those options already reflect the trip.
 - Before taking action on a specific flight, restate the exact flight (airline, time, price) and ask ONE question: "HOLD or BOOK?"
-- If user says HOLD: call hold_flight.
-- If user says BOOK: call hold_flight first (to get an order_id), then immediately call confirm_booking.
-- If a user's request is ambiguous (e.g. no origin city), ask one clarifying question.
+
+Intent recognition (only after you have just asked "HOLD or BOOK?" on a specific flight):
+- BOOK intent (call book_flight with the matching offer_id): "BOOK", "book it", "book please", "please book", "get it", "buy it", "purchase", "lock it in", "do it", "go ahead", "yes", "yep", "yeah", "sure", "ok", "okay", "let's go", "confirm".
+- HOLD intent (call hold_flight with the matching offer_id): "HOLD", "hold it", "save it", "reserve it", "pencil it in", "keep it".
+- Negative ("no", "not yet", "wait", "cancel", "nevermind"): do not call any tool. Ask what they want.
+- If a bare affirmative arrives without a recent "HOLD or BOOK?" question on a specific flight, do not call any tool — ask one clarifying question.
+
+Tool routing:
+- BOOK intent → book_flight (charges the user and creates the order in one step; works for any carrier, including Frontier and other instant-payment airlines).
+- HOLD intent → hold_flight. If hold_flight returns { error: true, instant_only: true }, tell the user this airline requires instant payment and ask if they want to BOOK now; on BOOK affirmative call book_flight.
+- For book_flight / hold_flight, always use an offer_id from the "offers" array in the latest search (or the pending options list in context). Never invent flights, prices, or flight numbers.
+
+Output formatting:
 - When search_flights returns results, use the "formatted" field as your reply verbatim — do not reformat or paraphrase it. Append one follow-up line: "Which one?" or "Want me to book one?"
-- When hold_flight returns, use the "formatted" field as your reply verbatim — do not reformat or paraphrase it.
-- For hold_flight, use the offer ID from the "offers" array in the search result.
-- Never invent flights, prices, or flight numbers that are not in the latest pending options list from context. If you need another itinerary, call search_flights again.
+- When hold_flight returns successfully, use the "formatted" field as your reply verbatim — do not reformat or paraphrase it.
+- When book_flight returns successfully, reply with: "Booked! Confirmation: <booking_reference>. Have a great flight!" (use the booking_reference from the tool result).
 - Format prices as "$X" not "$X.XX" unless cents matter.
-- After a successful booking, give the booking reference and wish them a good flight.`;
+- If a user's request is ambiguous (e.g. no origin city), ask one clarifying question.`;
 
 type ToolInput = Record<string, unknown>;
 
@@ -47,7 +63,7 @@ async function executeTool(
   user: UserProfile,
 ): Promise<string> {
   if (toolName === 'search_flights') {
-    const offers = await searchFlights({
+    const { offers, rawOfferRequest } = await searchFlights({
       origin: input.origin as string,
       destination: input.destination as string,
       departure_date: input.departure_date as string,
@@ -64,6 +80,7 @@ async function executeTool(
         departure_date: input.departure_date as string,
         return_date: (input.return_date as string | undefined) || undefined,
       },
+      duffel_raw_offer_request: rawOfferRequest,
     });
     return JSON.stringify({ formatted: offersToSMS(offers), offers });
   }
@@ -85,9 +102,9 @@ async function executeTool(
 
     const params = user.last_flight_search?.search_params;
 
-    let order;
+    let holdResult;
     try {
-      order = await holdOrder(offerId, {
+      holdResult = await holdOrder(offerId, {
         title: 'mr',
         gender: user.gender,
         given_name,
@@ -98,8 +115,19 @@ async function executeTool(
         passport_number: user.passport_number,
       });
     } catch (err) {
+      if (err instanceof OfferRequiresInstantPaymentError) {
+        return JSON.stringify({
+          error: true,
+          instant_only: true,
+          offer_id: err.offerId,
+          amount: err.amount,
+          currency: err.currency,
+          message:
+            "This airline requires instant payment, so I can't put it on hold. Want me to BOOK it now? Reply BOOK to confirm.",
+        });
+      }
       if (params && isStaleOfferError(err)) {
-        const offers = await searchFlights({
+        const { offers, rawOfferRequest } = await searchFlights({
           origin: params.origin,
           destination: params.destination,
           departure_date: params.departure_date,
@@ -109,6 +137,7 @@ async function executeTool(
           offers: summarizeOffersForContext(offers),
           updated_at: new Date().toISOString(),
           search_params: params,
+          duffel_raw_offer_request: rawOfferRequest,
         });
         return JSON.stringify({
           error: true,
@@ -120,6 +149,8 @@ async function executeTool(
       }
       throw err;
     }
+
+    const order = holdResult.order;
 
     const outSeg = order.slices[0]?.segments[0];
     const retSeg = order.slices[1]?.segments[0];
@@ -147,9 +178,165 @@ async function executeTool(
       bookingReference: order.booking_reference,
       amount: order.total_amount,
       currency: order.total_currency,
+      duffelPayload: {
+        offer_get: holdResult.rawOfferGet,
+        order_create: holdResult.rawOrderCreate,
+      },
     });
     await clearLastFlightSearch(user.id);
     return JSON.stringify({ order, formatted: confirmation });
+  }
+
+  if (toolName === 'book_flight') {
+    const offerId = input.offer_id as string;
+    const allowedIds = user.last_flight_search?.offers?.map((o) => o.offer_id) ?? [];
+    if (allowedIds.length > 0 && !allowedIds.includes(offerId)) {
+      return JSON.stringify({
+        error: true,
+        message:
+          'That offer_id is not in the latest search. Call search_flights again with the same route and dates, then call book_flight only with an offer_id from the new offers list.',
+      });
+    }
+
+    if (!user.stripe_spt_id) {
+      return JSON.stringify({
+        success: false,
+        message: `No payment method on file yet. Add your card here: ${buildSignupUrl(user.phone)}`,
+      });
+    }
+
+    const params = user.last_flight_search?.search_params;
+    const nameParts = user.name.trim().split(' ');
+    const given_name = nameParts[0];
+    const family_name = nameParts.slice(1).join(' ') || nameParts[0];
+
+    let pricing;
+    try {
+      pricing = await getOfferPricing(offerId);
+    } catch (err) {
+      const dErr = formatDuffelError(err);
+      console.error('[book_flight] getOfferPricing failed:', dErr);
+      if (params && isStaleOfferError(err)) {
+        const { offers, rawOfferRequest } = await searchFlights({
+          origin: params.origin,
+          destination: params.destination,
+          departure_date: params.departure_date,
+          return_date: params.return_date,
+        });
+        await setLastFlightSearch(user.id, {
+          offers: summarizeOffersForContext(offers),
+          updated_at: new Date().toISOString(),
+          search_params: params,
+          duffel_raw_offer_request: rawOfferRequest,
+        });
+        return JSON.stringify({
+          success: false,
+          stale_offer: true,
+          formatted: offersToSMS(offers),
+          offers,
+          message: `That offer expired before I could book it (${dErr}). Here are fresh options — pick one and I'll book.`,
+        });
+      }
+      return JSON.stringify({
+        success: false,
+        message: `I couldn't reach the airline to confirm price (${dErr}). Try again in a moment?`,
+      });
+    }
+
+    const amountStr = pricing.amount;
+    const currency = pricing.currency.toLowerCase();
+    const amountInCents = Math.round(parseFloat(amountStr) * 100);
+
+    let paymentIntentId: string | undefined;
+    try {
+      paymentIntentId = await chargeViaSPT(user.stripe_spt_id, amountInCents, currency);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[book_flight] stripe charge failed:', message);
+      return JSON.stringify({
+        success: false,
+        message: `I couldn't process your payment (${message}). Please update your card and try again.`,
+      });
+    }
+
+    let bookResult;
+    try {
+      bookResult = await bookOrderInstant(offerId, {
+        title: 'mr',
+        gender: user.gender,
+        given_name,
+        family_name,
+        date_of_birth: user.date_of_birth,
+        email: user.email,
+        phone_number: user.phone,
+        passport_number: user.passport_number,
+      });
+    } catch (err) {
+      const dErr = formatDuffelError(err);
+      console.error('[book_flight] duffel order failed after stripe charge:', dErr);
+      try {
+        if (paymentIntentId) {
+          const refundId = await refundPaymentIntent(paymentIntentId);
+          console.log(`[book_flight] refunded stripe payment ${paymentIntentId} → ${refundId}`);
+        }
+      } catch (refundErr) {
+        const rMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
+        console.error('[book_flight] STRIPE REFUND FAILED — manual review needed:', rMsg, {
+          payment_intent: paymentIntentId,
+          user_id: user.id,
+        });
+      }
+
+      if (params && isStaleOfferError(err)) {
+        const { offers, rawOfferRequest } = await searchFlights({
+          origin: params.origin,
+          destination: params.destination,
+          departure_date: params.departure_date,
+          return_date: params.return_date,
+        });
+        await setLastFlightSearch(user.id, {
+          offers: summarizeOffersForContext(offers),
+          updated_at: new Date().toISOString(),
+          search_params: params,
+          duffel_raw_offer_request: rawOfferRequest,
+        });
+        return JSON.stringify({
+          success: false,
+          stale_offer: true,
+          formatted: offersToSMS(offers),
+          offers,
+          message: `That offer expired before I could book it (${dErr}). I refunded the charge. Here are fresh options — pick one and I'll book.`,
+        });
+      }
+
+      return JSON.stringify({
+        success: false,
+        message: `I charged your card but the airline rejected the booking (${dErr}). I've refunded the charge. Want to try a different flight?`,
+      });
+    }
+
+    const order = bookResult.order;
+
+    await setPendingOrder({
+      userId: user.id,
+      orderId: order.id,
+      bookingReference: order.booking_reference,
+      amount: order.total_amount,
+      currency: order.total_currency,
+      duffelPayload: {
+        offer_get: bookResult.rawOfferGet,
+        order_create: bookResult.rawOrderCreate,
+        stripe_payment_intent: paymentIntentId,
+      },
+    });
+    await clearLastFlightSearch(user.id);
+    await clearPendingOrder(user.id);
+
+    return JSON.stringify({
+      success: true,
+      booking_reference: order.booking_reference,
+      message: `Booked! Confirmation: ${order.booking_reference}. Have a great flight!`,
+    });
   }
 
   if (toolName === 'confirm_booking') {

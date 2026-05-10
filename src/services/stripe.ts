@@ -21,3 +21,13 @@ export async function chargeViaSPT(
 
   return paymentIntent.id;
 }
+
+/**
+ * Refund a previously-confirmed PaymentIntent. Used to roll back a Stripe
+ * charge when a downstream booking step (e.g. Duffel order create) fails
+ * after the user has already been charged.
+ */
+export async function refundPaymentIntent(paymentIntentId: string): Promise<string> {
+  const refund = await stripe.refunds.create({ payment_intent: paymentIntentId });
+  return refund.id;
+}

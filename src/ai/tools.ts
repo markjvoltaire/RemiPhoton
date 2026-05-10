@@ -41,7 +41,7 @@ export const tools: Anthropic.Tool[] = [
   {
     name: 'hold_flight',
     description:
-      "Hold a specific flight offer using the user's stored passenger details. This reserves the itinerary without charging payment. Use this when the user says HOLD (or when you need an order_id to book).",
+      "Reserve a specific flight offer without charging payment, using the user's stored passenger details. Only works when the offer permits pay-later (e.g. Duffel Airways and some legacy carriers). If the offer requires instant payment (e.g. Frontier and most low-cost carriers), this returns { error: true, instant_only: true } and the user should be asked to BOOK instead.",
     input_schema: {
       type: 'object',
       properties: {
@@ -54,9 +54,24 @@ export const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'book_flight',
+    description:
+      "Charge the user's stored payment method and create a fully paid Duffel order in one step (`type: 'instant'` with payment in the same request). Use this whenever the user wants to book and pay now — including any clear affirmative reply (e.g. BOOK, book it, get it, buy it, lock it in, do it, yes, yep, sure, ok, go ahead) given just after a 'HOLD or BOOK?' confirmation question on a specific flight. Works for both pay-later and instant-payment carriers.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        offer_id: {
+          type: 'string',
+          description: 'The Duffel offer ID to book',
+        },
+      },
+      required: ['offer_id'],
+    },
+  },
+  {
     name: 'confirm_booking',
     description:
-      'Finalize payment and confirm a held order. Issues a single-use virtual card via Stripe Issuing and submits payment to Duffel. Use this when the user says BOOK.',
+      'Finalize payment for a previously held (pay_later) order. Charges the user via Stripe and submits the payment to Duffel from balance. Only use when an order is already held via hold_flight; for fresh bookings prefer book_flight.',
     input_schema: {
       type: 'object',
       properties: {
