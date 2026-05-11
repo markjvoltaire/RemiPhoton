@@ -1,4 +1,6 @@
-# Render Blueprint for RemiPhoton (long-running Spectrum app)
+# Render Blueprint for RemiPhoton (long-running Spectrum app).
+# Uses a Web service so PORT is set; `src/index.ts` binds a minimal HTTP listener for health checks.
+# Alternatively you can use a Background Worker (`type: worker`) if you prefer no HTTP at all.
 services:
   - type: web
     name: remiphoton
